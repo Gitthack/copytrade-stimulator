@@ -1,0 +1,13 @@
+[
+  {
+    "id": "refactor-copytrade",
+    "type": "refactor",
+    "description": "重构 CopyTrade Simulator 使用 Agent Orchestration 架构：1. 创建任务规划文档 2. 用 Codex 生成核心模块代码 3. 我审查代码 4. 整合到主项目",
+    "worktree": "./projects/copytrade-simulator/.clawbot/worktrees/refactor-copytrade",
+    "branch": "agent/refactor-copytrade",
+    "status": "running",
+    "started_at": "2026-02-26T06:06:54Z",
+    "claude_pid": null,
+    "check_count": 0
+  }
+]

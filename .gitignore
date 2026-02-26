@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+*.log
+
+# Environment
+.env
+.env.local
+
+# Agent worktrees (optional - can be committed or ignored)
+.clawbot/worktrees/
+
+# Reviews (optional)
+.clawbot/reviews/
+
+# OS
+.DS_Store
+Thumbs.db
