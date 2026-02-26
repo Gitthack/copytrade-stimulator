@@ -15,7 +15,8 @@ const command = args[0];
 async function main() {
   switch (command) {
     case 'dashboard':
-      new Dashboard().show();
+      const dashboard = new Dashboard();
+      await dashboard.show();
       break;
       
     case 'sync':
@@ -80,11 +81,16 @@ async function main() {
         const trades = await dataAPI.getAllTrades(queryAddress, 10);
         console.log(`   Found ${trades.length} trades`);
         
-        // 3. 保存交易记录到数据库
+        // 3. 保存交易记录到数据库（按时间排序，先存老的再存新的，方便盈亏计算）
         let totalPnl = 0;
-        for (const trade of trades) {
+        const savedTrades = [];
+        
+        // 按时间排序（老的在前）
+        const sortedTrades = trades.sort((a, b) => a.timestamp - b.timestamp);
+        
+        for (const trade of sortedTrades) {
           try {
-            const parsed = dataAPI.parseTrade(trade);
+            const parsed = dataAPI.parseTrade(trade, savedTrades);
             db3.addTrade({
               address_id: trader.id,
               tx_hash: parsed.txHash,
@@ -93,8 +99,11 @@ async function main() {
               amount_in: parsed.side === 'BUY' ? parsed.size * parsed.price : parsed.size,
               amount_out: parsed.side === 'SELL' ? parsed.size * parsed.price : parsed.size,
               timestamp: new Date(parsed.timestamp * 1000).toISOString(),
-              profit_loss: parsed.profitLoss
+              profit_loss: parsed.profitLoss,
+              side: parsed.side,
+              asset: parsed.asset
             });
+            savedTrades.push(parsed);
             totalPnl += parsed.profitLoss;
           } catch (err) {
             // 重复交易忽略

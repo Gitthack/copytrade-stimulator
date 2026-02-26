@@ -40,6 +40,8 @@ class CopytradeDB {
         amount_out REAL,
         timestamp INTEGER NOT NULL DEFAULT (strftime('%s','now')),
         profit_loss REAL,
+        side TEXT,
+        asset TEXT,
         FOREIGN KEY (address_id) REFERENCES tracked_addresses(id) ON DELETE CASCADE
       );
 
@@ -81,8 +83,8 @@ class CopytradeDB {
       insertTrade: this.db.prepare(
         `
         INSERT OR IGNORE INTO trades (
-          address_id, tx_hash, token_in, token_out, amount_in, amount_out, timestamp, profit_loss
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          address_id, tx_hash, token_in, token_out, amount_in, amount_out, timestamp, profit_loss, side, asset
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `.trim()
       ),
       getAddressStatsById: this.db.prepare(
@@ -95,7 +97,9 @@ class CopytradeDB {
           COUNT(t.id) AS trade_count,
           COALESCE(SUM(t.profit_loss), 0) AS total_profit_loss,
           COALESCE(AVG(t.profit_loss), 0) AS avg_profit_loss,
-          MAX(t.timestamp) AS last_trade_at
+          MAX(t.timestamp) AS last_trade_at,
+          COALESCE(SUM(CASE WHEN t.profit_loss > 0 THEN 1 ELSE 0 END), 0) AS wins,
+          COALESCE(SUM(CASE WHEN t.profit_loss < 0 THEN 1 ELSE 0 END), 0) AS losses
         FROM tracked_addresses a
         LEFT JOIN trades t ON t.address_id = a.id
         WHERE a.id = ?
@@ -112,7 +116,9 @@ class CopytradeDB {
           COUNT(t.id) AS trade_count,
           COALESCE(SUM(t.profit_loss), 0) AS total_profit_loss,
           COALESCE(AVG(t.profit_loss), 0) AS avg_profit_loss,
-          MAX(t.timestamp) AS last_trade_at
+          MAX(t.timestamp) AS last_trade_at,
+          COALESCE(SUM(CASE WHEN t.profit_loss > 0 THEN 1 ELSE 0 END), 0) AS wins,
+          COALESCE(SUM(CASE WHEN t.profit_loss < 0 THEN 1 ELSE 0 END), 0) AS losses
         FROM tracked_addresses a
         LEFT JOIN trades t ON t.address_id = a.id
         GROUP BY a.id
@@ -213,7 +219,9 @@ class CopytradeDB {
       trade.amount_in ?? trade.amountIn ?? null,
       trade.amount_out ?? trade.amountOut ?? null,
       timestamp,
-      trade.profit_loss ?? trade.profitLoss ?? null
+      trade.profit_loss ?? trade.profitLoss ?? null,
+      trade.side || null,
+      trade.asset || null
     );
 
     return result.changes;

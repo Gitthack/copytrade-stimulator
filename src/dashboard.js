@@ -1,21 +1,19 @@
-const PolymarketAPI = require('./polymarket-api');
+const PolymarketData = require('./polymarket-data');
 const { CopytradeDB } = require('./db');
-const PolymarketGraph = require('./polymarket-graph');
 
 class Dashboard {
   constructor() {
-    this.api = new PolymarketAPI();
+    this.api = new PolymarketData();
     this.db = new CopytradeDB();
-    this.graph = new PolymarketGraph();
   }
 
-  show() {
+  async show() {
     console.clear();
     console.log('╔══════════════════════════════════════════════════════════════╗');
     console.log('║      📊 Polymarket CopyTrade Dashboard v2.0               ║');
     console.log('╚══════════════════════════════════════════════════════════════╝\n');
 
-    this._showMarkets();
+    await this._showMarkets();
     this._showTraders();
     this._showCategories();
     this._showDuration();
@@ -24,13 +22,13 @@ class Dashboard {
   }
 
   // 📈 热门市场
-  _showMarkets() {
+  async _showMarkets() {
     console.log('📈 热门市场');
     console.log('─'.repeat(60));
     
-    const markets = this.api.getActiveMarkets(5);
+    const markets = await this.api.getActiveMarkets(5);
     if (markets.length === 0) {
-      console.log('   从 Graph API 获取市场数据...\n');
+      console.log('   暂无市场数据\n');
       return;
     }
 
@@ -69,7 +67,9 @@ class Dashboard {
     console.log('─'.repeat(60));
     
     traders.forEach(t => {
-      const winRate = '0.0'; // 暂时无法计算胜率
+      const winRate = t.trade_count > 0 
+        ? ((t.wins || 0) / t.trade_count * 100).toFixed(1) 
+        : '0.0';
       const pnl = t.total_profit_loss || 0;
       const pnlStr = pnl >= 0 ? `+$${pnl.toFixed(0)}` : `-$${Math.abs(pnl).toFixed(0)}`;
       const name = (t.label || '-').substring(0, 10).padEnd(10);
@@ -77,11 +77,15 @@ class Dashboard {
       const id = (t.id || 0).toString().padEnd(3);
       const trades = (t.trade_count || 0).toString().padEnd(5);
       
-      // 计算交易时长
+      // 计算交易时长（天数）
       const firstTrade = this.db.db.prepare(
         'SELECT MIN(timestamp) as first FROM trades WHERE address_id = ?'
       ).get(t.id);
-      const duration = this._formatDuration(firstTrade?.first);
+      let duration = '-';
+      if (firstTrade?.first) {
+        const days = Math.floor((Date.now() - new Date(firstTrade.first).getTime()) / (1000 * 60 * 60 * 24));
+        duration = `${days}天`;
+      }
       
       console.log(`${id} ${addr} ${name} ${winRate.padEnd(5)}% ${pnlStr.padEnd(9)} ${trades} ${duration}`);
     });
@@ -121,8 +125,8 @@ class Dashboard {
       const stats = this.db.getAddressStats(t.id);
       categories[dominantType].push({
         name: t.label || t.address.slice(0, 15),
-        pnl: stats?.total_pnl || 0,
-        trades: stats?.total_trades || 0
+        pnl: stats?.total_profit_loss || 0,
+        trades: stats?.trade_count || 0
       });
     });
 
@@ -169,7 +173,7 @@ class Dashboard {
 
     Object.entries(durations).forEach(([cat, list]) => {
       if (list.length > 0) {
-        const avgPnl = list.reduce((sum, t) => sum + (t.total_pnl || 0), 0) / list.length;
+        const avgPnl = list.reduce((sum, t) => sum + (t.total_profit_loss || 0), 0) / list.length;
         console.log(`${cat}: ${list.length}人 | 平均盈亏: ${avgPnl >= 0 ? '+' : ''}$${avgPnl.toFixed(0)}`);
       }
     });
