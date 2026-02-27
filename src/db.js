@@ -241,11 +241,21 @@ class CopytradeDB {
       addressId = row.id;
     }
 
-    return this._stmts.getAddressStatsById.get(Number(addressId));
+    const row = this._stmts.getAddressStatsById.get(Number(addressId));
+    if (row) {
+      const total = row.wins + row.losses;
+      row.win_rate = total > 0 ? (row.wins / total) * 100 : 0;
+    }
+    return row;
   }
 
   getAllAddressStats() {
-    return this._stmts.getAllAddressStats.all();
+    const rows = this._stmts.getAllAddressStats.all();
+    return rows.map(row => {
+      const total = row.wins + row.losses;
+      row.win_rate = total > 0 ? (row.wins / total) * 100 : 0;
+      return row;
+    });
   }
 
   saveRecommendation(recommendation) {
