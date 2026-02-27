@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CopyTrade Dashboard v5.0</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/dashboard.css">
+  <link rel="stylesheet" href="/css/dashboard-enhanced.css">
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+</head>
+<body>
+  <div class="app-container">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <div class="logo-icon">📊</div>
+          <span class="logo-text">CopyTrade</span>
+        </div>
+      </div>
+      
+      <nav class="sidebar-nav">
+        <div class="nav-section">
+          <div class="nav-section-title">主菜单</div>
+          <a href="#" class="nav-item active" data-page="dashboard">
+            <i>📈</i>
+            <span>Dashboard</span>
+          </a>
+          <a href="#" class="nav-item" data-page="traders">
+            <i>👥</i>
+            <span>交易员</span>
+          </a>
+          <a href="#" class="nav-item" data-page="markets">
+            <i>🎯</i>
+            <span>市场分析</span>
+          </a>
+        </div>
+        
+        <div class="nav-section">
+          <div class="nav-section-title">分析</div>
+          <a href="#" class="nav-item" data-page="performance">
+            <i>📊</i>
+            <span>盈亏分析</span>
+          </a>
+          <a href="#" class="nav-item" data-page="alerts">
+            <i>🔔</i>
+            <span>告警中心</span>
+            <span class="alert-badge" id="alertBadge" style="display:none">0</span>
+          </a>
+        </div>
+      </nav>
+      
+      <div class="sidebar-footer">
+        <div class="nav-item">
+          <i>⚙️</i>
+          <span>设置</span>
+        </div>
+      </div>
+    </aside>
+    
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Header -->
+      <header class="header">
+        <div class="header-left">
+          <button class="menu-toggle" id="menuToggle">☰</button>
+          <h1 class="page-title" id="pageTitle">Dashboard</h1>
+        </div>
+        
+        <div class="header-right">
+          <div class="refresh-control">
+            <span class="refresh-indicator" id="refreshIndicator"></span>
+            <select id="refreshInterval">
+              <option value="0">关闭自动刷新</option>
+              <option value="30" selected>30秒</option>
+              <option value="60">1分钟</option>
+              <option value="300">5分钟</option>
+            </select>
+          </div>
+          
+          <button class="theme-toggle" id="themeToggle" title="切换主题 (T)">
+            🌙
+          </button>
+          
+          <button class="btn-export" id="exportBtn" title="导出CSV">
+            <span>📥</span>
+            <span>导出CSV</span>
+          </button>
+          
+          <button class="btn-export" id="exportExcelBtn" title="导出Excel (Ctrl+E)">
+            <span>📊</span>
+            <span>导出Excel</span>
+          </button>
+        </div>
+      </header>
+      
+      <!-- Content Area -->
+      <div class="content" id="content">
+        <!-- Dashboard Page -->
+        <div id="dashboard-page" class="page active">
+          <!-- Stats Grid -->
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-header">
+                <div class="stat-icon primary">💰</div>
+                <span class="stat-change positive" id="totalPnlChange">+12.5%</span>
+              </div>
+              <div class="stat-value" id="totalPnl">-</div>
+              <div class="stat-label">总盈亏</div>
+            </div>
+            
+            <div class="stat-card success">
+              <div class="stat-header">
+                <div class="stat-icon success">🔄</div>
+                <span class="stat-change positive" id="tradeCountChange">+8.2%</span>
+              </div>
+              <div class="stat-value" id="totalTrades">-</div>
+              <div class="stat-label">总交易数</div>
+            </div>
+            
+            <div class="stat-card warning">
+              <div class="stat-header">
+                <div class="stat-icon warning">🏆</div>
+              </div>
+              <div class="stat-value" id="bestTrader">-</div>
+              <div class="stat-label">最佳交易员</div>
+            </div>
+            
+            <div class="stat-card danger">
+              <div class="stat-header">
+                <div class="stat-icon danger">🎯</div>
+              </div>
+              <div class="stat-value" id="bestWinRate">-</div>
+              <div class="stat-label">最高胜率</div>
+            </div>
+          </div>
+          
+          <!-- AI Recommendations -->
+          <div class="recommendations-section">
+            <div class="section-header">
+              <h3 class="chart-title">
+                <span>🤖</span>
+                <span>AI 推荐跟单</span>
+              </h3>
+            </div>
+            <div class="recommendations-list" id="recommendationsList">
+              <!-- Recommendations will be inserted here -->
+            </div>
+          </div>
+          
+          <!-- Charts Grid -->
+          <div class="charts-grid">
+            <div class="chart-card full-width">
+              <div class="chart-header">
+                <h3 class="chart-title">
+                  <span>📈</span>
+                  <span>盈亏走势图</span>
+                </h3>
+                <div class="chart-actions">
+                  <button class="chart-btn active" data-range="7d">7天</button>
+                  <button class="chart-btn" data-range="30d">30天</button>
+                  <button class="chart-btn" data-range="90d">90天</button>
+                  <button class="chart-btn" data-range="all">全部</button>
+                </div>
+              </div>
+              <div class="chart-container large" id="pnlChart"></div>
+            </div>
+            
+            <div class="chart-card">
+              <div class="chart-header">
+                <h3 class="chart-title">
+                  <span>🏅</span>
+                  <span>胜率排行榜</span>
+                </h3>
+              </div>
+              <div class="chart-container" id="winRateChart"></div>
+            </div>
+            
+            <div class="chart-card">
+              <div class="chart-header">
+                <h3 class="chart-title">
+                  <span>🥧</span>
+                  <span>赛道分布</span>
+                </h3>
+              </div>
+              <div class="chart-container" id="categoryChart"></div>
+            </div>
+          </div>
+          
+          <!-- Live Trades Stream -->
+          <div class="live-trades">
+            <div class="live-trades-header">
+              <h3 class="chart-title">
+                <span>⚡</span>
+                <span>实时交易流</span>
+              </h3>
+              <span class="live-badge">LIVE</span>
+            </div>
+            <div class="trades-stream" id="tradesStream">
+              <!-- Trades will be inserted here -->
+            </div>
+          </div>
+          
+          <!-- Alerts Panel -->
+          <div class="alerts-panel">
+            <div class="alerts-header">
+              <h3 class="chart-title">
+                <span>🚨</span>
+                <span>告警面板</span>
+              </h3>
+              <span class="alert-count" id="alertCount">0</span>
+            </div>
+            <div class="alerts-list" id="alertsList">
+              <!-- Alerts will be inserted here -->
+            </div>
+          </div>
+          
+          <!-- Top Traders Table -->
+          <div class="traders-section">
+            <div class="section-header">
+              <h3 class="chart-title">
+                <span>👥</span>
+                <span>交易员排行</span>
+              </h3>
+              <div class="search-box">
+                <i>🔍</i>
+                <input type="text" placeholder="搜索交易员..." id="traderSearch">
+              </div>
+            </div>
+            <div class="table-container">
+              <table class="data-table" id="tradersTable">
+                <thead>
+                  <tr>
+                    <th>交易员</th>
+                    <th class="sortable" data-sort="total_profit_loss">
+                      总盈亏 <span class="sort-icon">↕</span>
+                    </th>
+                    <th class="sortable" data-sort="win_rate">
+                      胜率 <span class="sort-icon">↕</span>
+                    </th>
+                    <th class="sortable" data-sort="trade_count">
+                      交易数 <span class="sort-icon">↕</span>
+                    </th>
+                    <th class="sortable" data-sort="avg_profit_loss">
+                      平均盈亏 <span class="sort-icon">↕</span>
+                    </th>
+                    <th class="sortable" data-sort="score.overall">
+                      AI评分 <span class="sort-icon">↕</span>
+                    </th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="tradersTableBody">
+                  <!-- Table rows will be inserted here -->
+                </tbody>
+              </table>
+            </div>
+            <div class="pagination">
+              <span class="pagination-info" id="paginationInfo">显示 1-10 共 0 条</span>
+              <div class="pagination-controls" id="paginationControls">
+                <!-- Pagination buttons will be inserted here -->
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Trader Detail Page -->
+        <div id="trader-detail-page" class="page" style="display: none;">
+          <div class="breadcrumb" id="traderBreadcrumb">
+            <a href="#" data-page="dashboard">Dashboard</a>
+            <span>/</span>
+            <span id="traderDetailName">交易员详情</span>
+          </div>
+          
+          <div class="trader-profile">
+            <div class="profile-card">
+              <div class="profile-avatar" id="traderAvatar">T</div>
+              <h2 class="profile-name" id="detailTraderName">-</h2>
+              <p class="profile-address" id="detailTraderAddress">-</p>
+              <div class="profile-stats">
+                <div class="profile-stat">
+                  <div class="profile-stat-value pnl-positive" id="detailTotalPnl">-</div>
+                  <div class="profile-stat-label">总盈亏</div>
+                </div>
+                <div class="profile-stat">
+                  <div class="profile-stat-value" id="detailWinRate">-</div>
+                  <div class="profile-stat-label">胜率</div>
+                </div>
+                <div class="profile-stat">
+                  <div class="profile-stat-value" id="detailTradeCount">-</div>
+                  <div class="profile-stat-label">交易数</div>
+                </div>
+                <div class="profile-stat">
+                  <div class="profile-stat-value" id="detailAvgPnl">-</div>
+                  <div class="profile-stat-label">平均盈亏</div>
+                </div>
+              </div>
+            </div>
+            
+            <!-- AI Score Card -->
+            <div id="scoreCard">
+              <!-- Score card will be inserted here -->
+            </div>
+            
+            <div class="profile-chart">
+              <div class="chart-header">
+                <h3 class="chart-title">
+                  <span>📈</span>
+                  <span>个人盈亏曲线</span>
+                </h3>
+              </div>
+              <div class="chart-container large" id="traderPnlChart"></div>
+            </div>
+          </div>
+          
+          <div class="charts-grid">
+            <div class="chart-card">
+              <div class="chart-header">
+                <h3 class="chart-title">
+                  <span>📊</span>
+                  <span>持仓分析</span>
+                </h3>
+              </div>
+              <div class="chart-container" id="positionChart"></div>
+            </div>
+            
+            <div class="chart-card">
+              <div class="chart-header">
+                <h3 class="chart-title">
+                  <span>🎯</span>
+                  <span>关联市场分析</span>
+                </h3>
+              </div>
+              <div class="chart-container" id="marketChart"></div>
+            </div>
+          </div>
+          
+          <div class="traders-section">
+            <div class="section-header">
+              <h3 class="chart-title">
+                <span>📋</span>
+                <span>交易明细</span>
+              </h3>
+              <div class="filter-group">
+                <button class="filter-btn active" data-filter="all">全部</button>
+                <button class="filter-btn" data-filter="buy">买入</button>
+                <button class="filter-btn" data-filter="sell">卖出</button>
+              </div>
+            </div>
+            <div class="table-container">
+              <table class="data-table" id="tradesDetailTable">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>市场</th>
+                    <th>方向</th>
+                    <th>金额</th>
+                    <th>盈亏</th>
+                    <th>交易哈希</th>
+                  </tr>
+                </thead>
+                <tbody id="tradesDetailBody">
+                  <!-- Trade rows will be inserted here -->
+                </tbody>
+              </table>
+            </div>
+            <div class="pagination">
+              <span class="pagination-info" id="detailPaginationInfo">显示 1-20 共 0 条</span>
+              <div class="pagination-controls" id="detailPaginationControls">
+                <!-- Pagination buttons will be inserted here -->
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Alerts Page -->
+        <div id="alerts-page" class="page" style="display: none;">
+          <div class="traders-section">
+            <div class="section-header">
+              <h3 class="chart-title">
+                <span>🚨</span>
+                <span>告警中心</span>
+              </h3>
+            </div>
+            <div class="alerts-list" id="alertsPageList">
+              <!-- Alerts will be inserted here -->
+            </div>
+          </div>
+        </div>
+        
+        <!-- Markets Page -->
+        <div id="markets-page" class="page" style="display: none;">
+          <div class="traders-section">
+            <div class="section-header">
+              <h3 class="chart-title">
+                <span>🎯</span>
+                <span>市场分析</span>
+              </h3>
+            </div>
+            <p>市场数据加载中...</p>
+          </div>
+        </div>
+        
+        <!-- Performance Page -->
+        <div id="performance-page" class="page" style="display: none;">
+          <div class="traders-section">
+            <div class="section-header">
+              <h3 class="chart-title">
+                <span>📊</span>
+                <span>盈亏分析</span>
+              </h3>
+            </div>
+            <p>盈亏分析加载中...</p>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+  
+  <!-- Toast Container -->
+  <div class="toast-container" id="toastContainer"></div>
+  
+  <!-- Alert Sound -->
+  <audio id="alertSound" preload="auto">
+    <source src="/assets/alert.mp3" type="audio/mpeg">
+  </audio>
+  
+  <script src="/js/dashboard.js"></script>
+</body>
+</html>

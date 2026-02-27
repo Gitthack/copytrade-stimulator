@@ -1,10 +1,10 @@
 const cron = require('node-cron');
-const PolymarketGraph = require('./polymarket-graph');
+const PolymarketDataAPI = require('./polymarket-data-api');
 const { CopytradeDB } = require('./db');
 
 class SyncService {
   constructor() {
-    this.graph = new PolymarketGraph();
+    this.api = new PolymarketDataAPI();
     this.db = new CopytradeDB();
     this.jobs = [];
   }
@@ -45,27 +45,35 @@ class SyncService {
   }
 
   async syncTrader(address) {
-    const trades = await this.graph.getTraderHistory(address);
+    const trades = await this.api.getUserTrades(address);
     const trader = this.db.getAllAddresses().find(t => t.address === address);
     
-    if (!trader) return;
+    if (!trader || trades.length === 0) return;
     
+    console.log(`   📥 ${trader.label}: 获取到 ${trades.length} 笔交易`);
+    
+    let added = 0;
     for (const trade of trades) {
       try {
-        const parsed = this.graph.parseTradeData(trade);
+        const parsed = this.api.parseTradeData(trade);
         this.db.addTrade({
           address_id: trader.id,
           tx_hash: parsed.txHash,
-          token_in: 'USDC',
-          token_out: parsed.marketQuestion?.substring(0, 20) || 'MARKET',
-          amount_in: parsed.amount,
-          amount_out: parsed.amount * parsed.price,
+          token_in: parsed.side === 'BUY' ? 'USDC' : parsed.marketQuestion?.substring(0, 20) || 'MARKET',
+          token_out: parsed.side === 'SELL' ? 'USDC' : parsed.marketQuestion?.substring(0, 20) || 'MARKET',
+          amount_in: parsed.usdcSize,
+          amount_out: parsed.usdcSize,
           timestamp: parsed.timestamp,
           profit_loss: parsed.profitLoss
         });
+        added++;
       } catch (err) {
         // 重复交易会失败，忽略
       }
+    }
+    
+    if (added > 0) {
+      console.log(`   ✅ 新增 ${added} 笔交易`);
     }
   }
 

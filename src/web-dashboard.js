@@ -1,354 +1,589 @@
+/**
+ * CopyTrade Dashboard v5.0 - Enhanced Web Dashboard
+ * Features: Real-time data, AI scoring, alerts, exports
+ */
+
 const express = require('express');
 const path = require('path');
+const { createServer } = require('http');
+const { WebSocketServer } = require('ws');
 const { CopytradeDB } = require('./db');
-const PolymarketData = require('./polymarket-data');
+const PolymarketDataService = require('./polymarket-data-service');
+const AlertSystem = require('./alert-system');
+const TraderScoring = require('./trader-scoring');
 
 class WebDashboard {
   constructor(port = 3000) {
     this.app = express();
     this.port = port;
     this.db = new CopytradeDB();
-    this.pmData = new PolymarketData();
+    this.dataService = new PolymarketDataService();
+    this.alertSystem = new AlertSystem(this.db);
+    this.scoring = new TraderScoring(this.db);
+    
+    this.server = createServer(this.app);
+    this.wss = new WebSocketServer({ server: this.server, path: '/ws' });
+    this.clients = new Set();
+    
+    this.setupMiddleware();
     this.setupRoutes();
+    this.setupWebSocket();
+    this.startPeriodicUpdates();
+    
+    // Alert listener for real-time notifications
+    this.alertSystem.onAlert((alerts) => {
+      this.broadcastAlerts(alerts);
+    });
+  }
+
+  setupMiddleware() {
+    this.app.use(express.static(path.join(__dirname, '../public')));
+    this.app.use(express.json());
+    
+    // CORS headers
+    this.app.use((req, res, next) => {
+      res.header('Access-Control-Allow-Origin', '*');
+      res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+      next();
+    });
   }
 
   setupRoutes() {
-    this.app.use(express.static(path.join(__dirname, '../public')));
-    this.app.use(express.json());
-
-    this.app.get('/api/traders', (req, res) => {
-      const traders = this.db.getAllAddressStats();
-      res.json(traders);
-    });
-
-    this.app.get('/api/traders/:id', (req, res) => {
-      const id = parseInt(req.params.id);
-      const trader = this.db.getAllAddressStats().find(t => t.id === id);
-      if (!trader) return res.status(404).json({ error: 'Not found' });
-      
-      const trades = this.db.db.prepare(
-        'SELECT * FROM trades WHERE address_id = ? ORDER BY timestamp DESC'
-      ).all(id);
-      
-      res.json({ ...trader, trades });
-    });
-
-    this.app.get('/api/markets', async (req, res) => {
-      const markets = await this.pmData.getTopMarketsByVolume(10);
-      res.json(markets);
-    });
-
-    this.app.get('/api/stats', (req, res) => {
-      const traders = this.db.getAllAddressStats();
-      const totalTrades = traders.reduce((sum, t) => sum + (t.trade_count || 0), 0);
-      const totalPnl = traders.reduce((sum, t) => sum + (t.total_profit_loss || 0), 0);
-      
-      res.json({
-        traderCount: traders.length,
-        totalTrades,
-        totalPnl,
-        lastUpdate: new Date().toISOString()
+    // Health check
+    this.app.get('/api/health', (req, res) => {
+      res.json({ 
+        status: 'ok', 
+        timestamp: new Date().toISOString(),
+        version: '5.0'
       });
     });
 
-    // 赛道分类统计
-    this.app.get('/api/categories', (req, res) => {
-      const categories = this._getCategoryStats();
-      res.json(categories);
-    });
-
-    // 交易时长分布
-    this.app.get('/api/duration', (req, res) => {
-      const duration = this._getDurationStats();
-      res.json(duration);
-    });
-
-    // AI 分析
-    this.app.get('/api/ai-analysis', (req, res) => {
-      const analysis = this._getAIAnalysis();
-      res.json(analysis);
-    });
-
-    this.app.get('/', (req, res) => {
-      res.send(this.getHTML());
-    });
-  }
-
-  _getCategoryStats() {
-    const traders = this.db.getAllAddressStats();
-    const categories = {};
+    // ============ Traders API ============
     
-    // 模拟赛道分类（基于交易员盈亏特征）
-    traders.forEach(t => {
-      let category = '📊 其他';
-      if (t.id === 1) category = '₿ 加密预测';
-      else if (t.id === 3) category = '⚽ 体育/竞技';
-      else if (t.id === 5) category = '🗳️ 政治/选举';
-      
-      if (!categories[category]) {
-        categories[category] = { traders: 0, totalPnl: 0, bestTrader: null, bestPnl: -Infinity };
-      }
-      categories[category].traders++;
-      categories[category].totalPnl += t.total_profit_loss || 0;
-      if ((t.total_profit_loss || 0) > categories[category].bestPnl) {
-        categories[category].bestPnl = t.total_profit_loss || 0;
-        categories[category].bestTrader = t.label || t.address.slice(0, 20);
-      }
-    });
-    
-    return Object.entries(categories).map(([name, data]) => ({
-      name,
-      traders: data.traders,
-      totalPnl: data.totalPnl,
-      bestTrader: data.bestTrader,
-      bestPnl: data.bestPnl
-    }));
-  }
-
-  _getDurationStats() {
-    const traders = this.db.getAllAddressStats();
-    const now = Math.floor(Date.now() / 1000);
-    
-    const groups = {
-      '新手 (<7天)': { days: 7, traders: [], pnl: 0 },
-      '短期 (1-4周)': { days: 28, traders: [], pnl: 0 },
-      '中期 (1-6月)': { days: 180, traders: [], pnl: 0 },
-      '长期 (>6月)': { days: Infinity, traders: [], pnl: 0 }
-    };
-    
-    traders.forEach(t => {
-      const days = Math.floor((now - t.added_at) / 86400);
-      if (days < 7) {
-        groups['新手 (<7天)'].traders.push(t);
-        groups['新手 (<7天)'].pnl += t.total_profit_loss || 0;
-      } else if (days < 28) {
-        groups['短期 (1-4周)'].traders.push(t);
-        groups['短期 (1-4周)'].pnl += t.total_profit_loss || 0;
-      } else if (days < 180) {
-        groups['中期 (1-6月)'].traders.push(t);
-        groups['中期 (1-6月)'].pnl += t.total_profit_loss || 0;
-      } else {
-        groups['长期 (>6月)'].traders.push(t);
-        groups['长期 (>6月)'].pnl += t.total_profit_loss || 0;
-      }
-    });
-    
-    return Object.entries(groups)
-      .filter(([_, data]) => data.traders.length > 0)
-      .map(([name, data]) => ({
-        name,
-        count: data.traders.length,
-        avgPnl: data.pnl / data.traders.length
-      }));
-  }
-
-  _getAIAnalysis() {
-    const traders = this.db.getAllAddressStats();
-    const categories = this._getCategoryStats();
-    
-    // 找出最佳赛道
-    const bestCategory = categories.sort((a, b) => b.totalPnl - a.totalPnl)[0];
-    
-    // 计算整体胜率
-    const totalWins = traders.reduce((sum, t) => sum + (t.wins || 0), 0);
-    const totalLosses = traders.reduce((sum, t) => sum + (t.losses || 0), 0);
-    const totalWithResult = totalWins + totalLosses;
-    const winRate = totalWithResult > 0 ? (totalWins / totalWithResult * 100).toFixed(1) : 0;
-    
-    return {
-      bestCategory: bestCategory?.name || null,
-      bestCategoryPnl: bestCategory?.totalPnl || 0,
-      overallWinRate: winRate,
-      totalTrades: traders.reduce((sum, t) => sum + (t.trade_count || 0), 0),
-      recommendation: bestCategory ? `关注${bestCategory.name}赛道的交易员` : '暂无建议'
-    };
-  }
-
-  getHTML() {
-    return `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>Polymarket CopyTrade Dashboard</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0a0f; color: #fff; padding: 20px; }
-    .header { text-align: center; padding: 30px; background: linear-gradient(135deg, #00f5ff22, #b829dd22); border-radius: 12px; margin-bottom: 20px; }
-    .header h1 { font-size: 2.5em; background: linear-gradient(90deg, #00f5ff, #b829dd); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
-    .stat-card { background: #16213e; padding: 20px; border-radius: 8px; text-align: center; }
-    .stat-value { font-size: 2em; font-weight: bold; color: #00f5ff; }
-    .stat-value.positive { color: #00ff88; }
-    .stat-value.negative { color: #ff4757; }
-    .stat-label { color: #888; margin-top: 5px; }
-    .section { background: #16213e; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
-    .section h2 { color: #00f5ff; margin-bottom: 15px; display: flex; align-items: center; gap: 10px; }
-    .trader-list { display: grid; gap: 10px; }
-    .trader-card { background: #1a1a2e; padding: 15px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; border-left: 4px solid #00f5ff; }
-    .trader-card.negative { border-left-color: #ff4757; }
-    .trader-info h3 { color: #fff; margin-bottom: 5px; }
-    .trader-info p { color: #888; font-size: 0.9em; }
-    .trader-stats { display: flex; gap: 15px; text-align: right; }
-    .stat-item { display: flex; flex-direction: column; }
-    .stat-item .value { font-size: 1.2em; font-weight: bold; color: #00ff88; }
-    .stat-item .value.negative { color: #ff4757; }
-    .stat-item .label { font-size: 0.75em; color: #666; }
-    .category-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; }
-    .category-card { background: #1a1a2e; padding: 15px; border-radius: 8px; border-left: 4px solid #b829dd; }
-    .category-card h3 { color: #fff; margin-bottom: 10px; }
-    .category-card p { color: #888; font-size: 0.9em; margin: 5px 0; }
-    .category-card .best { color: #00ff88; }
-    .duration-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
-    .duration-card { background: #1a1a2e; padding: 15px; border-radius: 8px; text-align: center; }
-    .duration-card h3 { color: #00f5ff; margin-bottom: 10px; }
-    .ai-box { background: linear-gradient(135deg, #1a1a2e, #16213e); padding: 20px; border-radius: 8px; border: 1px solid #00f5ff33; }
-    .ai-box h3 { color: #00f5ff; margin-bottom: 15px; }
-    .ai-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 15px; }
-    .ai-stat { text-align: center; }
-    .ai-stat .value { font-size: 1.5em; font-weight: bold; color: #fff; }
-    .ai-stat .label { color: #888; font-size: 0.85em; }
-    .recommendation { background: #00f5ff11; padding: 15px; border-radius: 8px; border-left: 4px solid #00f5ff; }
-    .recommendation p { color: #fff; }
-    .loading { text-align: center; padding: 40px; color: #888; }
-    .last-update { text-align: center; color: #666; font-size: 0.85em; margin-top: 20px; }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <h1>📊 Polymarket CopyTrade Dashboard</h1>
-    <p>实时追踪聪明钱交易员</p>
-  </div>
-
-  <div class="stats-grid">
-    <div class="stat-card">
-      <div class="stat-value" id="trader-count">-</div>
-      <div class="stat-label">追踪交易员</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-value" id="total-trades">-</div>
-      <div class="stat-label">总交易数</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-value" id="total-pnl">-</div>
-      <div class="stat-label">总盈亏</div>
-    </div>
-  </div>
-
-  <div class="section">
-    <h2>👥 追踪交易员</h2>
-    <div class="trader-list" id="trader-list"><div class="loading">加载中...</div></div>
-  </div>
-
-  <div class="section">
-    <h2>📈 热门市场</h2>
-    <div id="markets-list"><div class="loading">加载中...</div></div>
-  </div>
-
-  <div class="section">
-    <h2>🏷️ 赛道分类</h2>
-    <div class="category-grid" id="categories-list"><div class="loading">加载中...</div></div>
-  </div>
-
-  <div class="section">
-    <h2>⏱️ 交易时长分布</h2>
-    <div class="duration-list" id="duration-list"><div class="loading">加载中...</div></div>
-  </div>
-
-  <div class="section">
-    <h2>🤖 AI 市场分析</h2>
-    <div id="ai-analysis"><div class="loading">加载中...</div></div>
-  </div>
-
-  <div class="last-update" id="last-update"></div>
-
-  <script>
-    async function loadData() {
+    // Get all traders with stats and scores
+    this.app.get('/api/traders', (req, res) => {
       try {
-        // 基础统计
-        const statsRes = await fetch('/api/stats');
-        const stats = await statsRes.json();
-        document.getElementById('trader-count').textContent = stats.traderCount;
-        document.getElementById('total-trades').textContent = stats.totalTrades.toLocaleString();
-        const pnlEl = document.getElementById('total-pnl');
-        pnlEl.textContent = (stats.totalPnl >= 0 ? '+' : '') + '$' + Math.round(stats.totalPnl).toLocaleString();
-        pnlEl.className = 'stat-value ' + (stats.totalPnl >= 0 ? 'positive' : 'negative');
-        document.getElementById('last-update').textContent = '最后更新: ' + new Date(stats.lastUpdate).toLocaleString();
-
-        // 交易员列表（带胜率）
-        const tradersRes = await fetch('/api/traders');
-        const traders = await tradersRes.json();
-        const traderList = document.getElementById('trader-list');
-        traderList.innerHTML = traders.map(t => {
-          const pnl = t.total_profit_loss || 0;
-          const cardClass = pnl < 0 ? 'trader-card negative' : 'trader-card';
-          const pnlClass = pnl >= 0 ? 'value' : 'value negative';
-          const pnlStr = (pnl >= 0 ? '+' : '') + '$' + Math.round(pnl).toLocaleString();
-          const winRate = (t.win_rate || 0).toFixed(1);
-          return '<div class="' + cardClass + '"><div class="trader-info"><h3>' + 
-            (t.label || t.address.slice(0, 20) + '...') + '</h3><p>' + 
-            t.address.slice(0, 30) + '...</p></div>' +
-            '<div class="trader-stats">' +
-            '<div class="stat-item"><span class="value">' + winRate + '%</span><span class="label">胜率</span></div>' +
-            '<div class="stat-item"><span class="' + pnlClass + '">' + pnlStr + '</span><span class="label">盈亏</span></div>' +
-            '<div class="stat-item"><span class="value">' + (t.trade_count || 0) + '</span><span class="label">交易</span></div>' +
-            '</div></div>';
-        }).join('');
-
-        // 热门市场
-        const marketsRes = await fetch('/api/markets');
-        const markets = await marketsRes.json();
-        const marketsList = document.getElementById('markets-list');
-        marketsList.innerHTML = markets.slice(0, 5).map(m => {
-          const vol = (parseFloat(m.volume || 0) / 1000000).toFixed(2);
-          const liquidity = (parseFloat(m.liquidity || 0) / 1000).toFixed(1);
-          return '<div class="trader-card"><div class="trader-info"><h3>' + 
-            (m.question?.substring(0, 60) || 'Unknown') + '</h3><p>交易量: $' + vol + 'M | 流动性: $' + liquidity + 'K</p></div></div>';
-        }).join('');
-
-        // 赛道分类
-        const catRes = await fetch('/api/categories');
-        const categories = await catRes.json();
-        const catList = document.getElementById('categories-list');
-        catList.innerHTML = categories.map(c => {
-          const pnlStr = (c.totalPnl >= 0 ? '+' : '') + '$' + Math.round(c.totalPnl).toLocaleString();
-          return '<div class="category-card"><h3>' + c.name + '</h3><p>' + c.traders + ' 人交易</p><p>总盈亏: <span class="' + (c.totalPnl >= 0 ? 'best' : '') + '">' + pnlStr + '</span></p><p>最佳: ' + c.bestTrader + ' (+' + Math.round(c.bestPnl) + ')</p></div>';
-        }).join('');
-
-        // 交易时长
-        const durRes = await fetch('/api/duration');
-        const durations = await durRes.json();
-        const durList = document.getElementById('duration-list');
-        durList.innerHTML = durations.map(d => {
-          const pnlStr = (d.avgPnl >= 0 ? '+' : '') + '$' + Math.round(d.avgPnl).toLocaleString();
-          return '<div class="duration-card"><h3>' + d.name + '</h3><p>' + d.count + ' 人</p><p>平均盈亏: <span style="color:' + (d.avgPnl >= 0 ? '#00ff88' : '#ff4757') + '">' + pnlStr + '</span></p></div>';
-        }).join('');
-
-        // AI 分析
-        const aiRes = await fetch('/api/ai-analysis');
-        const ai = await aiRes.json();
-        const aiBox = document.getElementById('ai-analysis');
-        aiBox.innerHTML = '<div class="ai-box"><div class="ai-stats">' +
-          '<div class="ai-stat"><div class="value">' + ai.overallWinRate + '%</div><div class="label">整体胜率</div></div>' +
-          '<div class="ai-stat"><div class="value">' + ai.totalTrades.toLocaleString() + '</div><div class="label">总交易数</div></div>' +
-          '<div class="ai-stat"><div class="value">' + (ai.bestCategory || '-') + '</div><div class="label">最佳赛道</div></div>' +
-          '</div><div class="recommendation"><p>💡 ' + ai.recommendation + '</p></div></div>';
-
-      } catch (err) {
-        console.error('加载失败:', err);
+        let traders = this.db.getAllAddressStats();
+        
+        // Add AI scores
+        traders = this.scoring.batchScoreTraders(traders);
+        
+        // Sort by score if requested
+        const sortBy = req.query.sort || 'score';
+        if (sortBy === 'score') {
+          traders.sort((a, b) => b.score.overall - a.score.overall);
+        }
+        
+        res.json(traders);
+      } catch (error) {
+        console.error('Error fetching traders:', error);
+        res.status(500).json({ error: 'Failed to fetch traders' });
       }
+    });
+
+    // Get trader recommendations
+    this.app.get('/api/traders/recommendations', (req, res) => {
+      try {
+        const limit = parseInt(req.query.limit) || 5;
+        const recommendations = this.scoring.getTopRecommendations(limit);
+        res.json(recommendations);
+      } catch (error) {
+        console.error('Error fetching recommendations:', error);
+        res.status(500).json({ error: 'Failed to fetch recommendations' });
+      }
+    });
+
+    // Get single trader with details
+    this.app.get('/api/traders/:id', async (req, res) => {
+      try {
+        const id = parseInt(req.params.id);
+        const trader = this.db.getAllAddressStats().find(t => t.id === id);
+        
+        if (!trader) {
+          return res.status(404).json({ error: 'Trader not found' });
+        }
+        
+        // Get trades
+        const trades = this.db.db.prepare(
+          'SELECT * FROM trades WHERE address_id = ? ORDER BY timestamp DESC'
+        ).all(id);
+        
+        // Calculate score
+        const score = this.scoring.calculateScore(trader);
+        
+        // Get PnL history
+        const pnlHistory = this._getPnlHistory(id, 90);
+        
+        // Get related markets
+        const markets = await this._getTraderMarkets(id);
+        
+        res.json({ 
+          ...trader, 
+          trades, 
+          score,
+          pnlHistory,
+          markets
+        });
+      } catch (error) {
+        console.error('Error fetching trader:', error);
+        res.status(500).json({ error: 'Failed to fetch trader' });
+      }
+    });
+
+    // Get trader PnL history
+    this.app.get('/api/traders/:id/pnl-history', (req, res) => {
+      try {
+        const id = parseInt(req.params.id);
+        const days = parseInt(req.query.days) || 30;
+        const history = this._getPnlHistory(id, days);
+        res.json(history);
+      } catch (error) {
+        console.error('Error fetching PnL history:', error);
+        res.status(500).json({ error: 'Failed to fetch PnL history' });
+      }
+    });
+
+    // ============ Trades API ============
+    
+    this.app.get('/api/trades/recent', (req, res) => {
+      try {
+        const limit = parseInt(req.query.limit) || 20;
+        const offset = parseInt(req.query.offset) || 0;
+        
+        const trades = this.db.db.prepare(`
+          SELECT t.*, a.label as trader_label, a.address as trader_address
+          FROM trades t
+          JOIN tracked_addresses a ON t.address_id = a.id
+          ORDER BY t.timestamp DESC
+          LIMIT ? OFFSET ?
+        `).all(limit, offset);
+        
+        res.json(trades);
+      } catch (error) {
+        console.error('Error fetching recent trades:', error);
+        res.status(500).json({ error: 'Failed to fetch trades' });
+      }
+    });
+
+    // ============ Stats API ============
+    
+    this.app.get('/api/stats', (req, res) => {
+      try {
+        const traders = this.db.getAllAddressStats();
+        const totalTrades = traders.reduce((sum, t) => sum + (t.trade_count || 0), 0);
+        const totalPnl = traders.reduce((sum, t) => sum + (t.total_profit_loss || 0), 0);
+        const totalWins = traders.reduce((sum, t) => sum + (t.wins || 0), 0);
+        const totalLosses = traders.reduce((sum, t) => sum + (t.losses || 0), 0);
+        
+        // Calculate additional stats
+        const profitableTraders = traders.filter(t => (t.total_profit_loss || 0) > 0).length;
+        const avgWinRate = traders.length > 0 
+          ? traders.reduce((sum, t) => sum + (t.win_rate || 0), 0) / traders.length 
+          : 0;
+        
+        res.json({
+          traderCount: traders.length,
+          totalTrades,
+          totalPnl,
+          totalWins,
+          totalLosses,
+          profitableTraders,
+          avgWinRate: avgWinRate.toFixed(2),
+          overallWinRate: totalWins + totalLosses > 0 
+            ? (totalWins / (totalWins + totalLosses) * 100).toFixed(2) 
+            : 0,
+          lastUpdate: new Date().toISOString()
+        });
+      } catch (error) {
+        console.error('Error fetching stats:', error);
+        res.status(500).json({ error: 'Failed to fetch stats' });
+      }
+    });
+
+    // ============ Markets API ============
+    
+    this.app.get('/api/markets', async (req, res) => {
+      try {
+        const limit = parseInt(req.query.limit) || 10;
+        const markets = await this.dataService.getTopMarketsByVolume(limit);
+        res.json(markets);
+      } catch (error) {
+        console.error('Error fetching markets:', error);
+        res.status(500).json({ error: 'Failed to fetch markets' });
+      }
+    });
+
+    this.app.get('/api/markets/:id', async (req, res) => {
+      try {
+        const market = await this.dataService.getMarketById(req.params.id);
+        if (!market) {
+          return res.status(404).json({ error: 'Market not found' });
+        }
+        res.json(market);
+      } catch (error) {
+        console.error('Error fetching market:', error);
+        res.status(500).json({ error: 'Failed to fetch market' });
+      }
+    });
+
+    // ============ Alerts API ============
+    
+    this.app.get('/api/alerts', (req, res) => {
+      try {
+        const active = req.query.active === 'true';
+        const alerts = active 
+          ? this.alertSystem.getActiveAlerts()
+          : this.alertSystem.getAlertHistory(parseInt(req.query.limit) || 50);
+        res.json(alerts);
+      } catch (error) {
+        console.error('Error fetching alerts:', error);
+        res.status(500).json({ error: 'Failed to fetch alerts' });
+      }
+    });
+
+    this.app.get('/api/alerts/stats', (req, res) => {
+      try {
+        res.json(this.alertSystem.getStats());
+      } catch (error) {
+        console.error('Error fetching alert stats:', error);
+        res.status(500).json({ error: 'Failed to fetch alert stats' });
+      }
+    });
+
+    this.app.post('/api/alerts/:id/acknowledge', (req, res) => {
+      try {
+        const success = this.alertSystem.acknowledgeAlert(req.params.id);
+        res.json({ success });
+      } catch (error) {
+        console.error('Error acknowledging alert:', error);
+        res.status(500).json({ error: 'Failed to acknowledge alert' });
+      }
+    });
+
+    this.app.get('/api/alerts/thresholds', (req, res) => {
+      res.json(this.alertSystem.getThresholds());
+    });
+
+    this.app.post('/api/alerts/thresholds', (req, res) => {
+      try {
+        const { type, config } = req.body;
+        const success = this.alertSystem.setThreshold(type, config);
+        res.json({ success });
+      } catch (error) {
+        console.error('Error setting threshold:', error);
+        res.status(500).json({ error: 'Failed to set threshold' });
+      }
+    });
+
+    // ============ Export API ============
+    
+    // CSV Export
+    this.app.get('/api/export/traders', (req, res) => {
+      try {
+        const traders = this.db.getAllAddressStats();
+        const scored = this.scoring.batchScoreTraders(traders);
+        
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename=traders_${new Date().toISOString().split('T')[0]}.csv`);
+        
+        const headers = ['ID', 'Label', 'Address', 'Total PnL', 'Win Rate', 'Wins', 'Losses', 'Trade Count', 'Avg PnL', 'AI Score', 'Risk Level'];
+        const rows = scored.map(t => [
+          t.id,
+          t.label || '',
+          t.address,
+          t.total_profit_loss || 0,
+          t.win_rate?.toFixed(2) || 0,
+          t.wins || 0,
+          t.losses || 0,
+          t.trade_count || 0,
+          t.avg_profit_loss?.toFixed(2) || 0,
+          t.score?.overall || 0,
+          t.score?.riskLevel?.label || '未知'
+        ]);
+        
+        res.send([headers.join(','), ...rows.map(r => r.join(','))].join('\n'));
+      } catch (error) {
+        console.error('Error exporting traders:', error);
+        res.status(500).json({ error: 'Failed to export traders' });
+      }
+    });
+
+    // Excel Export (JSON format for frontend processing)
+    this.app.get('/api/export/excel', (req, res) => {
+      try {
+        const traders = this.db.getAllAddressStats();
+        const scored = this.scoring.batchScoreTraders(traders);
+        const alerts = this.alertSystem.getAlertHistory(100);
+        
+        // Get recent trades
+        const trades = this.db.db.prepare(`
+          SELECT t.*, a.label as trader_label
+          FROM trades t
+          JOIN tracked_addresses a ON t.address_id = a.id
+          ORDER BY t.timestamp DESC
+          LIMIT 1000
+        `).all();
+        
+        res.json({
+          sheets: {
+            traders: scored.map(t => ({
+              ID: t.id,
+              标签: t.label || '',
+              地址: t.address,
+              总盈亏: t.total_profit_loss || 0,
+              胜率: t.win_rate?.toFixed(2) || 0,
+              盈利次数: t.wins || 0,
+              亏损次数: t.losses || 0,
+              交易总数: t.trade_count || 0,
+              平均盈亏: t.avg_profit_loss?.toFixed(2) || 0,
+              AI评分: t.score?.overall || 0,
+              风险等级: t.score?.riskLevel?.label || '未知',
+              推荐操作: t.score?.recommendation?.text || ''
+            })),
+            trades: trades.map(t => ({
+              时间: new Date(t.timestamp * 1000).toISOString(),
+              交易员: t.trader_label || '',
+              市场: t.asset || '',
+              方向: t.side || '',
+              金额: t.amount_in || t.amount_out || 0,
+              盈亏: t.profit_loss || 0,
+              交易哈希: t.tx_hash || ''
+            })),
+            alerts: alerts.map(a => ({
+              时间: new Date(a.timestamp * 1000).toISOString(),
+              类型: a.type,
+              标题: a.title,
+              描述: a.description,
+              已确认: a.acknowledged ? '是' : '否'
+            }))
+          },
+          generatedAt: new Date().toISOString()
+        });
+      } catch (error) {
+        console.error('Error generating Excel data:', error);
+        res.status(500).json({ error: 'Failed to generate Excel data' });
+      }
+    });
+
+    // ============ Cache API ============
+    
+    this.app.get('/api/cache/stats', (req, res) => {
+      res.json(this.dataService.getCacheStats());
+    });
+
+    this.app.post('/api/cache/clear', (req, res) => {
+      const { pattern } = req.body || {};
+      this.dataService.clearCache(pattern);
+      res.json({ success: true });
+    });
+
+    // Serve main HTML
+    this.app.get('/', (req, res) => {
+      res.sendFile(path.join(__dirname, '../public/index.html'));
+    });
+
+    // Catch-all for SPA routing
+    this.app.get(/.*/, (req, res) => {
+      res.sendFile(path.join(__dirname, '../public/index.html'));
+    });
+  }
+
+  setupWebSocket() {
+    this.wss.on('connection', (ws) => {
+      console.log('New WebSocket client connected');
+      this.clients.add(ws);
+      
+      // Send initial data
+      ws.send(JSON.stringify({ 
+        type: 'connected', 
+        timestamp: Date.now(),
+        message: 'Connected to CopyTrade Dashboard v5.0'
+      }));
+      
+      // Handle client messages
+      ws.on('message', (data) => {
+        try {
+          const message = JSON.parse(data);
+          this.handleClientMessage(ws, message);
+        } catch (error) {
+          console.error('Invalid WebSocket message:', error);
+        }
+      });
+      
+      ws.on('close', () => {
+        console.log('WebSocket client disconnected');
+        this.clients.delete(ws);
+      });
+      
+      ws.on('error', (error) => {
+        console.error('WebSocket error:', error);
+        this.clients.delete(ws);
+      });
+    });
+  }
+
+  handleClientMessage(ws, message) {
+    switch (message.type) {
+      case 'subscribe_trader':
+        // Subscribe to real-time updates for a trader
+        const address = message.address;
+        if (address) {
+          this.dataService.subscribeToTrader(address, (trades) => {
+            ws.send(JSON.stringify({
+              type: 'trader_update',
+              address,
+              trades: trades.slice(0, 10)
+            }));
+          });
+        }
+        break;
+        
+      case 'ping':
+        ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
+        break;
     }
-    loadData();
-    setInterval(loadData, 30000);
-  </script>
-</body>
-</html>`;
+  }
+
+  startPeriodicUpdates() {
+    // Broadcast updates every 30 seconds
+    setInterval(() => {
+      this.broadcastUpdate();
+    }, 30000);
+    
+    // Generate alerts every minute
+    setInterval(() => {
+      this.checkAlerts();
+    }, 60000);
+  }
+
+  broadcastUpdate() {
+    if (this.clients.size === 0) return;
+    
+    const message = JSON.stringify({
+      type: 'update',
+      timestamp: Date.now(),
+      data: {
+        stats: this._getQuickStats(),
+        recentTrades: this._getRecentTrades(5)
+      }
+    });
+    
+    this.clients.forEach(client => {
+      if (client.readyState === 1) {
+        client.send(message);
+      }
+    });
+  }
+
+  broadcastAlerts(alerts) {
+    if (this.clients.size === 0 || alerts.length === 0) return;
+    
+    const message = JSON.stringify({
+      type: 'alerts',
+      timestamp: Date.now(),
+      alerts
+    });
+    
+    this.clients.forEach(client => {
+      if (client.readyState === 1) {
+        client.send(message);
+      }
+    });
+  }
+
+  broadcastNewTrade(trade) {
+    const message = JSON.stringify({
+      type: 'new_trade',
+      timestamp: Date.now(),
+      trade
+    });
+    
+    this.clients.forEach(client => {
+      if (client.readyState === 1) {
+        client.send(message);
+      }
+    });
+  }
+
+  checkAlerts() {
+    const traders = this.db.getAllAddressStats();
+    this.alertSystem.generateAlerts(traders);
+  }
+
+  _getQuickStats() {
+    const traders = this.db.getAllAddressStats();
+    return {
+      traderCount: traders.length,
+      totalTrades: traders.reduce((sum, t) => sum + (t.trade_count || 0), 0),
+      totalPnl: traders.reduce((sum, t) => sum + (t.total_profit_loss || 0), 0)
+    };
+  }
+
+  _getRecentTrades(limit = 5) {
+    return this.db.db.prepare(`
+      SELECT t.*, a.label as trader_label
+      FROM trades t
+      JOIN tracked_addresses a ON t.address_id = a.id
+      ORDER BY t.timestamp DESC
+      LIMIT ?
+    `).all(limit);
+  }
+
+  _getPnlHistory(traderId, days) {
+    const trades = this.db.db.prepare(`
+      SELECT timestamp, profit_loss
+      FROM trades
+      WHERE address_id = ?
+      ORDER BY timestamp ASC
+    `).all(traderId);
+    
+    const history = [];
+    let cumulative = 0;
+    const now = Date.now() / 1000;
+    const cutoff = now - days * 86400;
+    
+    trades.forEach(trade => {
+      if (trade.timestamp >= cutoff) {
+        cumulative += trade.profit_loss || 0;
+        history.push({
+          timestamp: trade.timestamp,
+          date: new Date(trade.timestamp * 1000).toISOString().split('T')[0],
+          pnl: cumulative
+        });
+      }
+    });
+    
+    return history;
+  }
+
+  async _getTraderMarkets(traderId) {
+    try {
+      const trades = this.db.db.prepare(`
+        SELECT DISTINCT asset
+        FROM trades
+        WHERE address_id = ? AND asset IS NOT NULL
+        LIMIT 10
+      `).all(traderId);
+      
+      return trades.map(t => t.asset).filter(Boolean);
+    } catch (error) {
+      return [];
+    }
   }
 
   start() {
-    this.app.listen(this.port, () => {
-      console.log('🌐 Web Dashboard running at http://localhost:' + this.port);
+    this.server.listen(this.port, () => {
+      console.log(`🌐 CopyTrade Dashboard v5.0 running at http://localhost:${this.port}`);
+      console.log(`📊 API endpoints available at http://localhost:${this.port}/api`);
+      console.log(`🔌 WebSocket server ready at ws://localhost:${this.port}/ws`);
     });
+  }
+
+  stop() {
+    this.wss.close();
+    this.server.close();
+    this.db.close();
   }
 }
 

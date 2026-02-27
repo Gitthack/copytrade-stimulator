@@ -1,54 +1,140 @@
-const { execSync } = require('child_process');
+const axios = require('axios');
+
+// Polymarket Gamma API (公开，无需认证)
+const GAMMA_API = 'https://gamma-api.polymarket.com';
+// Polymarket CLOB API (公开行情)
+const CLOB_API = 'https://clob.polymarket.com';
 
 class PolymarketAPI {
-  _run(cmd) {
+  // 获取市场列表
+  async getMarkets(limit = 100) {
     try {
-      const output = execSync(cmd, { encoding: 'utf8', timeout: 10000 });
-      return JSON.parse(output);
+      const res = await axios.get(`${GAMMA_API}/markets`, {
+        params: { limit, active: true },
+        timeout: 10000
+      });
+      return res.data?.markets || [];
     } catch (err) {
-      // 如果命令失败但返回了输出，尝试解析
-      if (err.stdout) {
-        try {
-          return JSON.parse(err.stdout);
-        } catch {}
-      }
-      console.error(`Polymarket CLI error: ${err.message}`);
+      console.error('Gamma API error:', err.message);
       return [];
     }
   }
 
-  getMarkets(limit = 10) {
-    return this._run(`polymarket markets list --limit ${limit} -o json`);
-  }
-
-  getActiveMarkets(limit = 10) {
-    const markets = this._run(`polymarket markets list --limit ${limit} -o json`);
-    return markets.filter(m => m.active === true && !m.closed);
-  }
-
-  searchMarkets(query, limit = 10) {
-    return this._run(`polymarket markets search "${query}" --limit ${limit} -o json`);
-  }
-
-  categorizeMarket(question) {
-    const q = (question || '').toLowerCase();
+  // 获取用户交易历史 (通过 CLOB API)
+  async getTraderHistory(address) {
+    const allTrades = [];
+    let nextCursor = null;
     
-    if (/bitcoin|btc|ethereum|eth|crypto|defi|nft|blockchain|solana|cardano/.test(q)) 
-      return '加密/DeFi';
-    if (/election|trump|biden|vote|president|senate|congress|political|governor/.test(q)) 
-      return '政治/选举';
-    if (/super bowl|world cup|olympics|nba|nfl|fifa|tennis|ufc|boxing|championship/.test(q)) 
-      return '体育/竞技';
-    if (/ai|artificial intelligence|gpt|openai|tesla|spacex|elon|tech|google|apple/.test(q)) 
-      return '科技/AI';
-    if (/oscar|grammy|kanye|taylor swift|celebrity|movie|album|twitter|meta|facebook/.test(q)) 
-      return '娱乐/名人';
-    if (/weather|temperature|hurricane|earthquake|rain|snow|storm|climate/.test(q)) 
-      return '天气/自然';
-    if (/fed|interest rate|inflation|recession|gdp|unemployment|stock market|sp500|nasdaq/.test(q)) 
-      return '经济/金融';
+    console.log(`   📥 获取 ${address.slice(0, 20)}... 的交易历史`);
     
-    return '其他';
+    try {
+      // CLOB API 获取交易记录
+      while (allTrades.length < 5000) { // 最多5000条
+        const params = {
+          address: address.toLowerCase(),
+          limit: 100
+        };
+        if (nextCursor) params.cursor = nextCursor;
+        
+        const res = await axios.get(`${CLOB_API}/trades`, {
+          params,
+          timeout: 15000
+        });
+        
+        const trades = res.data?.trades || [];
+        if (trades.length === 0) break;
+        
+        allTrades.push(...trades);
+        
+        // 检查是否有下一页
+        nextCursor = res.data?.next_cursor;
+        if (!nextCursor || trades.length < 100) break;
+        
+        console.log(`     已获取 ${allTrades.length} 笔...`);
+      }
+      
+      console.log(`   ✅ 共获取 ${allTrades.length} 笔交易`);
+      return allTrades;
+      
+    } catch (err) {
+      console.error('CLOB API error:', err.message);
+      // 如果 CLOB 失败，尝试从 Gamma 获取有限数据
+      return this.getTraderHistoryFromGamma(address);
+    }
+  }
+  
+  // 备用：从 Gamma 获取交易
+  async getTraderHistoryFromGamma(address) {
+    try {
+      const res = await axios.get(`${GAMMA_API}/portfolio/${address.toLowerCase()}`, {
+        timeout: 10000
+      });
+      
+      // Gamma 返回的是持仓，需要转换
+      const positions = res.data?.positions || [];
+      const trades = [];
+      
+      for (const pos of positions) {
+        if (pos.trades) {
+          trades.push(...pos.trades.map(t => ({
+            id: t.transactionHash,
+            market: { id: t.marketId, question: pos.market?.question },
+            amount: t.size,
+            price: t.price,
+            timestamp: Math.floor(new Date(t.timestamp).getTime() / 1000),
+            profitLoss: t.profitLoss || 0,
+            side: t.side
+          })));
+        }
+      }
+      
+      return trades;
+    } catch (err) {
+      console.error('Gamma portfolio error:', err.message);
+      return [];
+    }
+  }
+
+  // 获取热门市场
+  async getActiveMarkets(limit = 10) {
+    try {
+      const res = await axios.get(`${GAMMA_API}/markets`, {
+        params: {
+          limit,
+          active: true,
+          sort: 'volume',
+          order: 'desc'
+        },
+        timeout: 10000
+      });
+      
+      return (res.data?.markets || []).map(m => ({
+        id: m.id,
+        question: m.question,
+        volume: m.volume || 0,
+        liquidity: m.liquidity || 0,
+        category: m.category
+      }));
+    } catch (err) {
+      console.error('Gamma API error:', err.message);
+      return [];
+    }
+  }
+
+  // 转换数据格式
+  parseTradeData(rawTrade) {
+    return {
+      txHash: rawTrade.id || rawTrade.transactionHash,
+      marketId: rawTrade.market?.id || rawTrade.marketId,
+      marketQuestion: rawTrade.market?.question,
+      outcome: rawTrade.side || rawTrade.outcome,
+      amount: parseFloat(rawTrade.amount || rawTrade.size || 0),
+      price: parseFloat(rawTrade.price || 0),
+      timestamp: typeof rawTrade.timestamp === 'string' 
+        ? Math.floor(new Date(rawTrade.timestamp).getTime() / 1000)
+        : parseInt(rawTrade.timestamp),
+      profitLoss: parseFloat(rawTrade.profitLoss || 0)
+    };
   }
 }
 
