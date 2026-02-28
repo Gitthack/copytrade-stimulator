@@ -67,8 +67,8 @@ class PolymarketDataAPI {
       outcome: rawTrade.outcomeIndex === 0 ? 'Yes' : 'No',
       amount: parseFloat(rawTrade.size || 0),
       price: parseFloat(rawTrade.price || 0),
-      timestamp: Math.floor(rawTrade.timestamp / 1000), // 转换为秒
-      profitLoss: 0, // Data API 不直接提供盈亏，需要计算
+      timestamp: rawTrade.timestamp, // API 返回的已经是 Unix 秒
+      profitLoss: 0,
       side: rawTrade.side,
       usdcSize: parseFloat(rawTrade.usdcSize || 0)
     };
